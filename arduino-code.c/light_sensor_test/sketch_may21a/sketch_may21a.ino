@@ -1,4 +1,4 @@
-const int LIGHT_SENSOR = 12;
+const int LIGHT_SENSOR = 0;
 
 
 // Definition of variables - values that can change
