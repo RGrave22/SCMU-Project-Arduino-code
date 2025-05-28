@@ -7,20 +7,21 @@
 #include <U8g2lib.h>
 #include <esp_wifi.h>
 #include <Wire.h>
+#include <ESP32Servo.h>
 #include "DHT.h"
 
-//Wifi credentials
-#define WIFI_SSID "Grave"
-#define WIFI_PASSWORD "grave123"
+//Wifi
+#define WIFI_SSID "CasaAraujo_East_5G"
+#define WIFI_PASSWORD "quintinha2020top"
 
-//Firebase credentials
+//Firebase
 #define API_KEY "AIzaSyDB8cIkBU5lxgIqYjr7YKDWvtlyf5SIeQ4"
 #define DATABASE_URL "https://scmu-7d9e7-default-rtdb.europe-west1.firebasedatabase.app/" 
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
-//MQTT credentias
+//MQTT
 #define MQTT_BROKER_ADRESS "broker.hivemq.com"
 #define MQTT_CLIENT_NAME "botaniq_client"
 #define MQTT_PORT 1883
@@ -32,7 +33,14 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
 //Pins
 #define BUTTONPIN 4
-#define DHTPIN 18
+#define DHTPIN 19
+#define LIGHTSENSORPIN 34
+#define WATERLEVELPIN 33
+#define SOILSENSORPIN 32
+#define SERVO_PIN 18
+
+//Servo
+Servo myServo;
 
 //Button
 int buttonNew = 0;
@@ -40,6 +48,8 @@ int buttonNew = 0;
 //DHT
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
+float lastTemp = 0.0;
+float lastHum = 0.0;
 
 void setup() 
 {
@@ -51,6 +61,7 @@ void setup()
   setupMQTT();
   setupMonitor();
   setupButton();
+  setupServo();
   const char* mac = getMacAddress();
   Serial.println(mac);
 }
@@ -60,7 +71,12 @@ void loop()
   handleMQTT();
   handleButton();//responsable to Display the values on the screen
 
+  
+}
 
+void setupServo()
+{
+  myServo.attach(SERVO_PIN);
 }
 
 
@@ -156,6 +172,26 @@ void OnMqttReceived(char *topic, byte *payload, unsigned int length)
     {
         content.concat((char)payload[i]);
     }
+
+    /* Codigo para girar o servo
+    Serial.println("Vai rodar");
+
+    for (int angle = 0; angle <= 180; angle++) {
+      myServo.write(angle);
+      delay(15);  
+    }
+
+    delay(1000); 
+
+    
+    for (int angle = 180; angle >= 0; angle--) {
+      myServo.write(angle);
+      delay(15);
+    }
+
+    delay(1000);
+    */
+    
     Serial.print(content);
     Serial.println();
 }
@@ -245,33 +281,80 @@ const char* getMacAddress()
     return s;
 }
 
-//To display all sensor values
+//Display all sensor values
 void showSensorValues() {
   float temp = dht.readTemperature(); 
   float hum = dht.readHumidity();
+  float light = getLightSensorValue();
+  int waterLevel = getWaterLevel();
+  int soilHum = getSoilHum();
+  
+  if (!isnan(temp) && !isnan(hum)) {
+    lastTemp = temp;
+    lastHum = hum;
+  }
 
+  
   u8g2.setFontPosCenter();
   u8g2.clearBuffer();
-  //u8g2.setFont(u8g2_font_10x20_te);
   u8g2.setFont(u8g2_font_6x10_tr);
+  //u8g2.setFont(u8g2_font_5x7_tr);
 
-  //Temos de por os valores de acordo com os sensores
   char temperature[10];
-  dtostrf(temp, 6, 2, temperature);
+  dtostrf(lastTemp, 6, 2, temperature);
+
   char humidity[10];
-  dtostrf(hum, 6, 2, humidity);
+  dtostrf(lastHum, 6, 2, humidity);
 
   char tempDisplay[20];
-  snprintf(tempDisplay, sizeof(tempDisplay), "TEMP: %s C", temperature);
+  snprintf(tempDisplay, sizeof(tempDisplay), "Temp: %s C", temperature);
 
   char humDisplay[20];
-  snprintf(humDisplay, sizeof(humDisplay), "HUM: %s %%", humidity); 
+  snprintf(humDisplay, sizeof(humDisplay), "Hum: %s %%", humidity); 
 
-  u8g2.drawStr(0, 10, tempDisplay);
-  u8g2.drawStr(0, 25, humDisplay);
+  char lightDisplay[20];
+  snprintf(lightDisplay, sizeof(lightDisplay), "Light: %.1f %%", light);
+
+  char waterDisplay[20];
+  snprintf(waterDisplay, sizeof(waterDisplay), "W. Level: %d %%", waterLevel);
+
+  char soilHumDisplay[20];
+  snprintf(soilHumDisplay, sizeof(soilHumDisplay), "S. Hum: %d %%", soilHum);
+
+  u8g2.drawStr(0, 11, tempDisplay);
+  u8g2.drawStr(0, 22, humDisplay);
+  u8g2.drawStr(0, 33, lightDisplay);
+  u8g2.drawStr(0, 44, waterDisplay);
+  u8g2.drawStr(0, 55, soilHumDisplay);
 
   u8g2.sendBuffer();
-  //delay(3000);
+}
+
+float getLightSensorValue() 
+{
+  int analogValue = analogRead(LIGHTSENSORPIN);
+  //Serial.println(analogValue);
+  float lightPercent = (analogValue / 4095.0) * 100.0;
+  return lightPercent;
+}
+
+int getWaterLevel()
+{
+  int waterLevelRaw = analogRead(WATERLEVELPIN);
+  int waterLevelPercent = map(waterLevelRaw, 0, 4095, 0, 100); 
+
+  //Serial.println(waterLevelRaw);
+
+  return waterLevelPercent;
+}
+ 
+int getSoilHum()
+{
+  int sensorValue = analogRead(SOILSENSORPIN);
+  //Serial.println(sensorValue);
+  int soilHumPercent = map(sensorValue, 0, 4095, 0, 100);
+
+  return soilHumPercent;
 }
 
 
