@@ -9,10 +9,13 @@
 #include <Wire.h>
 #include <ESP32Servo.h>
 #include "DHT.h"
+#include <Preferences.h>
 
 //Wifi
 #define WIFI_SSID "CasaAraujo_East_5G"
 #define WIFI_PASSWORD "quintinha2020top"
+//#define WIFI_SSID "Grave"
+//#define WIFI_PASSWORD "grave123"
 
 //Firebase
 #define API_KEY "AIzaSyDB8cIkBU5lxgIqYjr7YKDWvtlyf5SIeQ4"
@@ -28,7 +31,11 @@ FirebaseConfig config;
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 
-//Monitor
+//Preferences
+Preferences preferences;
+String myid;
+
+//OLED
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
 //Pins
@@ -38,6 +45,7 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 #define WATERLEVELPIN 33
 #define SOILSENSORPIN 32
 #define SERVO_PIN 18
+#define WATERPUMPPIN 2
 
 //Servo
 Servo myServo;
@@ -51,27 +59,48 @@ DHT dht(DHTPIN, DHTTYPE);
 float lastTemp = 0.0;
 float lastHum = 0.0;
 
+//Connection bools
+bool hasWifi;
+
 void setup() 
 {
   Serial.begin(9600);
 
   //Setups
   setupWifi();
-  setupFirebase();
-  setupMQTT();
+
+  if(hasWifi){
+    const char* mac = getMacAddress();
+    setupFirebase();
+    setupMQTT();
+    Serial.println(mac);
+  }
+
+
+
   setupMonitor();
   setupButton();
   setupServo();
-  const char* mac = getMacAddress();
-  Serial.println(mac);
+  setupPreferences();
+  setupWPump();
+  
+  
 }
 
 void loop() 
 {
-  handleMQTT();
-  handleButton();//responsable to Display the values on the screen
+  if(hasWifi){
+    handleMQTT();
+  }
+  
+  handleButton(); //responsable to Display the values on the screen
 
   
+}
+
+void setupWPump()
+{
+  pinMode(WATERPUMPPIN, OUTPUT);
 }
 
 void setupServo()
@@ -79,7 +108,7 @@ void setupServo()
   myServo.attach(SERVO_PIN);
 }
 
-
+/*
 void setupWifi() 
 {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -92,6 +121,31 @@ void setupWifi()
 
   Serial.println();
   Serial.println("Connected with IP: " + WiFi.localIP().toString());
+}
+*/
+
+void setupWifi() 
+{
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to Wi-Fi");
+
+  unsigned long startAttemptTime = millis();  // regista o tempo de início
+  const unsigned long timeout = 10000;        // 10 segundos (em milissegundos)
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < timeout) {
+    Serial.print(".");
+    delay(300);
+  }
+
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Connected with IP: " + WiFi.localIP().toString());
+    hasWifi = true;
+  } else {
+    Serial.println("Failed to connect to Wi-Fi within 10 seconds.");
+    hasWifi = false;
+  }
 }
 
 void setupFirebase()
@@ -108,6 +162,46 @@ void setupFirebase()
 
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
+
+  
+    if (Firebase.ready()) {
+      const char* mac = getMacAddress();
+      String smac = String(mac);
+      smac.trim();  // Remove espaços e quebras
+
+      String path = "/macs/" + smac;
+
+      if (Firebase.RTDB.getBool(&fbdo, path + "/hasUser")) {
+          bool hasUser = fbdo.boolData();
+          
+          if (!hasUser) {
+              FirebaseJson json;
+              json.set("mac", smac);
+              json.set("hasUser", false);
+
+              if (Firebase.RTDB.setJSON(&fbdo, path, &json)) {
+                  Serial.println("MAC address registered successfully");
+              } else {
+                  Serial.println("Failed to register MAC address: " + fbdo.errorReason());
+              }
+          } else {
+              Serial.println("MAC already registered with hasUser true");
+          }
+      } else {
+          
+          FirebaseJson json;
+          json.set("mac", smac);
+          json.set("hasUser", false);
+
+          if (Firebase.RTDB.setJSON(&fbdo, path, &json)) {
+              Serial.println("MAC address registered successfully");
+          } else {
+              Serial.println("Failed to register MAC address: " + fbdo.errorReason());
+          }
+          
+      }
+  }
+ 
 }
 
 
@@ -132,6 +226,17 @@ void setupButton()
   pinMode(BUTTONPIN, INPUT_PULLUP);
 }
 
+void setupPreferences()
+{
+    preferences.begin("mydata", false);
+    //Uncomment if we want to reset the flash memory
+    //preferences.clear();
+    myid = preferences.getString("myid", "");
+    Serial.print("Loaded myid: ");
+    Serial.println(myid);
+    
+}
+
 void handleButton()
 {
   buttonNew=digitalRead(BUTTONPIN);
@@ -152,8 +257,8 @@ void subscribeMQTT()
     String topic = "greenhouse/";
     topic += mac;  
 
-    //To remove the excess spaces
-    topic.replace(":", "");
+    
+    //topic.replace(":", "");
 
     mqttClient.subscribe(topic.c_str());  
 
@@ -173,24 +278,31 @@ void OnMqttReceived(char *topic, byte *payload, unsigned int length)
         content.concat((char)payload[i]);
     }
 
-    /* Codigo para girar o servo
-    Serial.println("Vai rodar");
-
-    for (int angle = 0; angle <= 180; angle++) {
-      myServo.write(angle);
-      delay(15);  
+    
+    if (content.indexOf("turnwater") != -1) {
+        Serial.println(content);
+        String valueStr = content.substring(content.indexOf(":") + 1);
+        int sec = valueStr.toInt();
+        
+        turnWaterPumpOn(sec);
     }
 
-    delay(1000); 
+    if (content.indexOf("window") != -1) {
+        Serial.println(content);
+        turnServoOn(45);
+    }
+
+    if (content.indexOf("yourid") != -1) {
+        myid = content.substring(content.indexOf(":") + 1);
+        Serial.print("New myid received: ");
+        Serial.println(myid);
+        
+        preferences.putString("myid", myid);
+        Serial.println("myid saved to flash.");
+    }
+    
 
     
-    for (int angle = 180; angle >= 0; angle--) {
-      myServo.write(angle);
-      delay(15);
-    }
-
-    delay(1000);
-    */
     
     Serial.print(content);
     Serial.println();
@@ -225,34 +337,44 @@ void ConnectMQTT()
 
 void displayMacAddress()
 {
-    WiFi.mode(WIFI_STA);
-    WiFi.STA.begin();
-    Serial.print("[DEFAULT] ESP32 Board MAC Address: ");
-    uint8_t baseMac[6];
-    esp_err_t ret = esp_wifi_get_mac(WIFI_IF_STA, baseMac);
-    if (ret == ESP_OK)
-    {
-        Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x\n",
-                      baseMac[0], baseMac[1], baseMac[2],
-                      baseMac[3], baseMac[4], baseMac[5]);
-    }
-    else
-    {
-        Serial.println("Failed to read MAC address");
-    }
+    if(hasWifi){
+      WiFi.mode(WIFI_STA);
+      WiFi.STA.begin();
+      Serial.print("[DEFAULT] ESP32 Board MAC Address: ");
+      uint8_t baseMac[6];
+      esp_err_t ret = esp_wifi_get_mac(WIFI_IF_STA, baseMac);
+      if (ret == ESP_OK)
+      {
+          Serial.printf("%02x:%02x:%02x:%02x:%02x:%02x\n",
+                        baseMac[0], baseMac[1], baseMac[2],
+                        baseMac[3], baseMac[4], baseMac[5]);
+      }
+      else
+      {
+          Serial.println("Failed to read MAC address");
+      }
 
-    char s[20];
-    sprintf(s, "%02x:%02x:%02x:%02x:%02x:%02x",
-            baseMac[0], baseMac[1], baseMac[2],
-            baseMac[3], baseMac[4], baseMac[5]);
+      char s[20];
+      sprintf(s, "%02x:%02x:%02x:%02x:%02x:%02x",
+              baseMac[0], baseMac[1], baseMac[2],
+              baseMac[3], baseMac[4], baseMac[5]);
 
-    u8g2.begin();
-    u8g2.clearDisplay();
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tr); 
-    u8g2.drawStr(0, 10, "Connection code:");
-    u8g2.drawStr(0, 25, s);  
-    u8g2.sendBuffer();
+      u8g2.begin();
+      u8g2.clearDisplay();
+      u8g2.clearBuffer();
+      u8g2.setFont(u8g2_font_6x10_tr); 
+      u8g2.drawStr(0, 10, "Connection code:");
+      u8g2.drawStr(0, 25, s);  
+      u8g2.sendBuffer();
+    }else{
+      u8g2.begin();
+      u8g2.clearDisplay();
+      u8g2.clearBuffer();
+      u8g2.setFont(u8g2_font_6x10_tr); 
+      u8g2.drawStr(0, 10, "No connection...");  
+      u8g2.sendBuffer();
+    }
+    
 }
 
 
@@ -274,7 +396,7 @@ const char* getMacAddress()
         Serial.println("Failed to read MAC address");
     }
     static char s[20];
-    sprintf(s, "%02x:%02x:%02x:%02x:%02x:%02x\n",
+    sprintf(s, "%02x:%02x:%02x:%02x:%02x:%02x",
             baseMac[0], baseMac[1], baseMac[2],
             baseMac[3], baseMac[4], baseMac[5]);
 
@@ -294,6 +416,9 @@ void showSensorValues() {
     lastHum = hum;
   }
 
+  if(hasWifi) {
+    sendtofbSensorValues(temp, hum, light, waterLevel, soilHum);
+  }
   
   u8g2.setFontPosCenter();
   u8g2.clearBuffer();
@@ -328,6 +453,28 @@ void showSensorValues() {
   u8g2.drawStr(0, 55, soilHumDisplay);
 
   u8g2.sendBuffer();
+
+
+  //handling when there is no connection
+  if(!hasWifi){
+    if(soilHum < 15){
+      turnWaterPumpOn(4);
+    }
+    if(waterLevel < 10){
+      u8g2.setFontPosCenter();
+      u8g2.clearBuffer();
+
+      u8g2.drawStr(0, 11, "Low water level...");
+      u8g2.sendBuffer();
+      delay(2000);
+    }
+    if(hum > 80){
+      turnServoOn(45);
+    }
+    if(hum < 30){
+      turnServoOn(45);
+    }
+  }
 }
 
 float getLightSensorValue() 
@@ -357,6 +504,53 @@ int getSoilHum()
   return soilHumPercent;
 }
 
+void turnWaterPumpOn(int sec)
+{
+  //code to turn water pump
+  digitalWrite(WATERPUMPPIN, HIGH);
+  int milisec = sec*1000;
+  delay(milisec);
+  digitalWrite(WATERPUMPPIN, LOW);
+  //Serial.println(myid);
+}
+
+void turnServoOn(int angleToGet)
+{
+  
+  int maxAngle = angleToGet;
+
+  int angle = 0;
+  for (angle = 0; angle <= maxAngle; angle++) {
+    myServo.write(angle);
+    delay(15);  
+  }
+
+  delay(1000); 
+  
+}
+
+void sendtofbSensorValues(float temp, float hum, int light, int waterLevel, int soilHum) 
+{
+    String basePath = "/greenhouses/" + myid + "/";
+
+    Serial.println(myid);
+
+    if(myid != ""){
+      FirebaseJson json;
+      json.set("temperature", temp);
+      json.set("humidity", hum);
+      json.set("light", light);
+      json.set("waterLevel", waterLevel);
+      json.set("soilHumidity", soilHum);
+
+      if (Firebase.RTDB.updateNode(&fbdo, basePath.c_str(), &json)) {
+        Serial.println("Sensor values updated successfully.");
+      } else {
+        Serial.print("Firebase update failed: ");
+        Serial.println(fbdo.errorReason());
+      }
+    }
+}
 
 
 
