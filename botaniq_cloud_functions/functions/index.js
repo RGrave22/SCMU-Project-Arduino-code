@@ -1,7 +1,5 @@
 const {onValueUpdated} = require("firebase-functions/v2/database");
-const {
-  log,
-} = require("firebase-functions/logger");
+const {log} = require("firebase-functions/logger");
 const admin = require("firebase-admin");
 admin.initializeApp();
 
@@ -12,39 +10,76 @@ exports.notifyChanges = onValueUpdated({
 async (event) => {
   const greenhouseData = event.data.after.val();
 
-  const userId = greenhouseData.owner;
-  log("USER ID: " + userId);
-  let fcmToken;
-  try {
-    const tokenSnapshot = await admin
-        .database()
-        .ref(`/users/${userId}/fcmToken`).once("value");
-    fcmToken = tokenSnapshot.val();
-  } catch (error) {
-    console.error(`Failed to retrieve FCM token for user ${userId}:`, error);
+  if (!greenhouseData) {
+    log("No greenhouse data found.");
     return null;
   }
 
-  if (!fcmToken) {
-    log(`No FCM token for user ${userId}`);
+  const greenhouseId = greenhouseData.id;
+  if (!greenhouseId) {
+    log("No greenhouse ID found in data.");
     return null;
   }
-  log("FCM TOKEN: " + fcmToken);
+
+  const topic = `greenhouse_${greenhouseId}`; // e.g. "greenhouse_abc123"
 
   const payload = {
     notification: {
       title: "Greenhouse Active",
       body: "Your greenhouse status is now active!",
     },
-    token: fcmToken,
+    topic: topic,
   };
 
   try {
     const response = await admin.messaging().send(payload);
-    log(`Notification sent to ${userId}:`, response);
+    log(`Notification sent to topic "${topic}":`, response);
   } catch (error) {
-    console.error("Error sending notification:", error);
+    console.error("Error sending notification to topic:", error);
   }
 
   return null;
-});
+},
+);
+
+exports.notifyTemperature = onValueUpdated({
+  ref: "/greenhouses/{id}",
+  region: "europe-west1",
+},
+async (event) => {
+  const greenhouseData = event.data.after.val();
+
+  if (!greenhouseData) {
+    log("No greenhouse data found.");
+    return null;
+  }
+
+  const greenhouseId = greenhouseData.id;
+  if (!greenhouseId) {
+    log("No greenhouse ID found in data.");
+    return null;
+  }
+
+  const topic = `greenhouse_${greenhouseId}`; // e.g. "greenhouse_abc123"
+
+  const temperature = greenhouseData.id.temperature;
+  const tempThreshold = greenhouseData.id.thresholds.maxTemperature;
+  if (temperature > tempThreshold) {
+    const payload = {
+      notification: {
+        title: "Temperature is too High!",
+        body: "Temperature Level: " + temperature,
+      },
+      topic: topic,
+    };
+
+    try {
+      const response = await admin.messaging().send(payload);
+      log(`Notification sent to topic "${topic}":`, response);
+    } catch (error) {
+      console.error("Error sending notification to topic:", error);
+    }
+  }
+  return null;
+},
+);
