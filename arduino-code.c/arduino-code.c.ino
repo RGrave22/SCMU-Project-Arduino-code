@@ -49,6 +49,11 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
 //Servo
 Servo myServo;
+int currentAngle = 0;
+unsigned long lastServoTime = 0;
+const unsigned long servoCooldown = 300000;
+//const unsigned long servoCooldown = 15000;
+bool firstServoUse = true;
 
 //Button
 int buttonNew = 0;
@@ -61,6 +66,12 @@ float lastHum = 0.0;
 
 //Connection bools
 bool hasWifi;
+
+//waterPump
+unsigned long lastWateringTime = 0;
+const unsigned long wateringCooldown = 300000;
+//const unsigned long wateringCooldown = 15000;
+bool firstWaterUse = true;
 
 void setup() 
 {
@@ -95,7 +106,6 @@ void loop()
   
   handleButton(); //responsable to Display the values on the screen
 
-  
 }
 
 void setupWPump()
@@ -289,7 +299,7 @@ void OnMqttReceived(char *topic, byte *payload, unsigned int length)
 
     if (content.indexOf("window") != -1) {
         Serial.println(content);
-        turnServoOn(45);
+        turnServoOn();
     }
 
     if (content.indexOf("yourid") != -1) {
@@ -416,8 +426,11 @@ void showSensorValues() {
     lastHum = hum;
   }
 
+
+
   if(hasWifi) {
-    sendtofbSensorValues(temp, hum, light, waterLevel, soilHum);
+    sendtofbSensorValues(lastTemp, lastHum, light, waterLevel, soilHum);
+    checkTresholds(lastTemp, lastHum, light, waterLevel, soilHum);
   }
   
   u8g2.setFontPosCenter();
@@ -457,8 +470,11 @@ void showSensorValues() {
 
   //handling when there is no connection
   if(!hasWifi){
-    if(soilHum < 15){
-      turnWaterPumpOn(4);
+    if(soilHum < 30){
+      if(waterLevel != 0){
+          turnWaterPumpOnAsRoutine(4);
+      }
+      
     }
     if(waterLevel < 10){
       u8g2.setFontPosCenter();
@@ -468,11 +484,11 @@ void showSensorValues() {
       u8g2.sendBuffer();
       delay(2000);
     }
-    if(hum > 80){
-      turnServoOn(45);
+    if(lastHum > 80){
+      turnServoOnAsRoutine();
     }
-    if(hum < 30){
-      turnServoOn(45);
+    if(lastHum < 30){
+      turnServoOnAsRoutine();
     }
   }
 }
@@ -506,7 +522,11 @@ int getSoilHum()
 
 void turnWaterPumpOn(int sec)
 {
-  //code to turn water pump
+  
+  u8g2.setFontPosCenter();
+  u8g2.clearBuffer();
+  u8g2.drawStr(0, 11, "Watering...");
+  u8g2.sendBuffer();
   digitalWrite(WATERPUMPPIN, HIGH);
   int milisec = sec*1000;
   delay(milisec);
@@ -514,9 +534,38 @@ void turnWaterPumpOn(int sec)
   //Serial.println(myid);
 }
 
+void turnWaterPumpOnAsRoutine(int sec)
+{
+  unsigned long now = millis();
+
+  if (firstWaterUse || (now - lastWateringTime >= wateringCooldown)) {
+    u8g2.setFontPosCenter();
+    u8g2.clearBuffer();
+    u8g2.drawStr(0, 11, "Watering...");
+    u8g2.sendBuffer();
+
+    digitalWrite(WATERPUMPPIN, HIGH);
+    delay(sec * 1000);
+    digitalWrite(WATERPUMPPIN, LOW);
+
+    lastWateringTime = now;  
+    firstWaterUse = false;
+    Serial.println("Watered at: " + String(now / 1000) + "s");
+  } else {
+    Serial.println("Watering skipped: cooldown not finished.");
+  }
+}
+
+
+
+/*
 void turnServoOn(int angleToGet)
 {
-  
+  u8g2.setFontPosCenter();
+  u8g2.clearBuffer();
+  u8g2.drawStr(0, 11, "Opening window...");
+  u8g2.sendBuffer();
+  /*
   int maxAngle = angleToGet;
 
   int angle = 0;
@@ -527,13 +576,44 @@ void turnServoOn(int angleToGet)
 
   delay(1000); 
   
+
+  currentAngle += 45;
+  if (currentAngle > 180) currentAngle = 180;
+  myServo.write(currentAngle);
+
+  delay(500);
+}
+*/
+
+void turnServoOn()
+{
+  myServo.write(120);     
+  delay(300);             
+  myServo.write(95);
+}
+
+void turnServoOnAsRoutine()
+{
+  unsigned long now = millis();
+
+  if (firstServoUse || (now - lastServoTime >= servoCooldown)) {
+    myServo.write(120);     
+    delay(300);             
+    myServo.write(95);
+
+    lastServoTime = now;
+    firstServoUse = false;
+    Serial.println("Servo activated.");
+  } else {
+    Serial.println("Servo skipped: cooldown not finished.");
+  }
 }
 
 void sendtofbSensorValues(float temp, float hum, int light, int waterLevel, int soilHum) 
 {
     String basePath = "/greenhouses/" + myid + "/";
 
-    Serial.println(myid);
+    //Serial.println(myid);
 
     if(myid != ""){
       FirebaseJson json;
@@ -543,7 +623,8 @@ void sendtofbSensorValues(float temp, float hum, int light, int waterLevel, int 
       json.set("waterLevel", waterLevel);
       json.set("soilHumidity", soilHum);
 
-      if (Firebase.RTDB.updateNode(&fbdo, basePath.c_str(), &json)) {
+      //if (Firebase.RTDB.updateNode(&fbdo, basePath.c_str(), &json)) {
+      if (Firebase.RTDB.updateNode(&fbdo, basePath, &json)) {
         Serial.println("Sensor values updated successfully.");
       } else {
         Serial.print("Firebase update failed: ");
@@ -553,23 +634,58 @@ void sendtofbSensorValues(float temp, float hum, int light, int waterLevel, int 
 }
 
 
+void checkTresholds(float temp, float hum, int light, int waterLevel, int soilHum) {
+  
+  if(myid != ""){
 
+      String pathHumidity = "/greenhouses/" + myid + "/thresholdHumidityMax";
+      int maxHumidity = 0;
+      if (Firebase.RTDB.getInt(&fbdo, pathHumidity)) {
+        maxHumidity = fbdo.intData();
+        Serial.printf("Max Humidity: %d\n", maxHumidity);
 
+        if (hum > maxHumidity) {
+          Serial.println("Opening window...");
+          turnServoOnAsRoutine();
+        }
+      } else {
+        Serial.println("Erro ao obter thHumidity: " + fbdo.errorReason());
+      }
 
+      String pathminHumidity = "/greenhouses/" + myid + "/thresholdHumidityMin";
+      int minHumidity = 0;
+      if (Firebase.RTDB.getInt(&fbdo, pathminHumidity)) {
+        minHumidity = fbdo.intData();
+        Serial.printf("Min Humidity: %d\n", minHumidity);
 
+        if (hum < minHumidity) {
+          Serial.println("Opening window...");
+          turnServoOnAsRoutine();
+        }
 
+      } else {
+        Serial.println("Erro ao obter thHumidity: " + fbdo.errorReason());
+      }
 
+      String pathSoilHumidity = "/greenhouses/" + myid + "/thresholdSoilHumidity";
+      int maxSoilHumidity = 0;
+      if (Firebase.RTDB.getInt(&fbdo, pathSoilHumidity)) {
+        maxSoilHumidity = fbdo.intData();
+        Serial.printf("Max Soil Humidity: %d\n", maxSoilHumidity);
 
-
-
-
-
-
-
-
-
-
-
+        if (soilHum < maxSoilHumidity) {
+          if(waterLevel!=0){
+            Serial.println("Watering...");
+            turnWaterPumpOnAsRoutine(4);
+          }
+          
+        }
+      } else {
+        Serial.println("Erro ao obter thSoilHumidity: " + fbdo.errorReason());
+      }
+  }
+  
+}
 
 
 
